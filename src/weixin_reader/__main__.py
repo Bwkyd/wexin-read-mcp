@@ -1,4 +1,4 @@
-"""Backward-compatible launcher for local path-based usage."""
+"""Support `python -m weixin_reader`."""
 
 from weixin_reader.server import main
 
