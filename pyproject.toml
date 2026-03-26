@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weixin-reader"
+version = "0.1.0"
+description = "An MCP server that reads Weixin public articles."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "whp" }
+]
+dependencies = [
+  "fastmcp>=0.1.0",
+  "playwright>=1.40.0",
+  "beautifulsoup4>=4.12.0",
+  "lxml>=4.9.0",
+]
+keywords = ["mcp", "weixin", "wechat", "reader"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/whp/wexin-read-mcp"
+Repository = "https://github.com/whp/wexin-read-mcp"
+
+[project.scripts]
+weixin-reader = "weixin_reader.server:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
