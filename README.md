@@ -113,6 +113,22 @@ uv publish
 
 发布后，任意支持 MCP 的客户端都可以直接通过 `uvx weixin-reader` 启动它。
 
+### GitHub Actions 自动发布
+
+仓库现在已经包含两条工作流：
+
+- `CI`：在 `push` / `pull_request` 时执行 `uv build`
+- `Publish to PyPI`：在 GitHub Release 发布后自动上传到 PyPI
+
+要让自动发布生效，你还需要在 PyPI 里为这个 GitHub 仓库配置 Trusted Publishing。配置完成后，发布流程通常是：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+然后在 GitHub 上创建对应的 Release，工作流就会自动把构建产物发布到 PyPI。
+
 ## 注意事项
 
 - 仅用于个人学习和研究
