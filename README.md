@@ -19,17 +19,36 @@
 
 - **Python 3.10+**
 - **fastmcp** - MCP框架
-- **Playwright** - 浏览器自动化
+- **agent-browser** (Rust + Chrome for Testing + 裸 CDP) - 反爬抓取内核,外部二进制依赖
 - **BeautifulSoup4** - HTML解析
+
+> **v0.2.0 升级说明**: 原 Playwright 方案被微信加强反爬打穿 ([issue #3](https://github.com/Bwkyd/wexin-read-mcp/issues/3))。抓取层改为委托给 [agent-browser](https://github.com/vercel-labs/agent-browser)(Apache-2.0 开源 Rust 项目),反爬内核由上游维护升级。MCP 协议/接口零变化,现有 Claude/Cursor 配置不需要调整。
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 安装 agent-browser (反爬内核,v0.2.0 起必需)
 
-# 安装Python依赖
+```bash
+# 推荐: Homebrew (macOS)
+brew install agent-browser
+
+# 或: npm 全局安装
+npm install -g agent-browser
+
+# 验证
+agent-browser --version
+
+# 首次运行会自动下载 Chrome for Testing (~150 MB),按提示确认即可
+agent-browser install
+```
+
+### 2. 安装 Python 依赖
+
+```bash
 pip install -r requirements.txt
+```
 
-### 2. 配置
+### 3. 配置
 
 ```json
 {
