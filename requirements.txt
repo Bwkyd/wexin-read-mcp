@@ -1,11 +1,10 @@
 # Core dependencies
 fastmcp>=0.1.0
-beautifulsoup4>=4.12.0
+pyyaml>=6.0
 
-# v0.2.0+: playwright / lxml 已移除.
-# 抓取层通过 subprocess 调 agent-browser binary, 需要另外安装:
-#   brew install agent-browser
-#   # 或: npm install -g agent-browser
+# v0.3.0: agent-browser / playwright / beautifulsoup4 已全部移除.
+# 抓取 + 解析 全委托给 url-md (Rust 单二进制), 需要另外安装:
+#   curl -fsSL https://raw.githubusercontent.com/Bwkyd/url-md/main/install.sh | bash
 
 # Development dependencies (optional)
 # pytest>=7.4.0

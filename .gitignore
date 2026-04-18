@@ -53,3 +53,5 @@ htmlcov/
 # Environment variables
 .env
 .env.local
+# Local Claude Code MCP config (contains absolute paths)
+.mcp.json

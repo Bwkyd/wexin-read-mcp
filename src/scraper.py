@@ -1,165 +1,174 @@
-"""微信文章爬虫 - 委托 agent-browser (Rust + CDP + Chrome for Testing) 做反爬.
+"""微信文章爬虫 - 委托 url-md (Rust CLI,反爬 + Markdown 一步到位).
 
-v0.2.0 起,原 Playwright 方案被微信加强反爬打穿(issue #3).
-抓取层改为 subprocess 调用 agent-browser binary, 反爬内核由上游 Rust 项目维护.
+v0.3.0 起,抓取层从 agent-browser (4 subprocess 调用 + BeautifulSoup 解析)
+简化为 url-md 单次调用。url-md 内部已处理:反爬 (reqwest 永久链 + CDP
+回退 scaffold)、微信正文抽取、frontmatter 生成、Markdown 转换。
 
-前置要求: agent-browser 已装在 PATH 中
-  brew install agent-browser
-  # 或 npm install -g agent-browser
+前置要求: url-md 已装在 PATH 中
+  curl -fsSL https://raw.githubusercontent.com/Bwkyd/url-md/main/install.sh | bash
+
+相比 v0.2.0 的改进:
+- 4 subprocess → 1 subprocess
+- 无需 session 锁(url-md 无状态)
+- 无需 BeautifulSoup(url-md 已抽取)
+- binary 7 MB vs agent-browser ~50 MB(含 Chrome-for-Testing)
 """
 
 import asyncio
-import json
 import shutil
-import uuid
 
-# 支持相对导入和绝对导入
-try:
-    from .parser import WeixinParser
-except ImportError:
-    from parser import WeixinParser
+import yaml
 
 
-class AgentBrowserNotFound(RuntimeError):
-    """agent-browser binary 未在 PATH 中."""
+class UrlMdNotFound(RuntimeError):
+    """url-md binary 未在 PATH 中."""
 
 
 class WeixinScraper:
-    """微信文章爬虫 - 通过 agent-browser binary 抓取."""
+    """微信文章爬虫 - 通过 url-md CLI 抓取 Markdown,解析 frontmatter 返回结构化数据."""
 
     def __init__(self):
-        self.parser = WeixinParser()
-        # 每个 WeixinScraper 实例独占一个 session 名
-        self._session_name = f"weixin-mcp-{uuid.uuid4().hex[:8]}"
-        self._session_active = False
-        # MCP server 通常把 WeixinScraper 做全局单例,并发请求共享同一 session.
-        # 同一 session 的两次 navigate 会冲突(后者把前者的 page 覆盖),故串行化.
-        self._lock = asyncio.Lock()
+        # url-md 是无状态 CLI,每次 fetch 独立进程,无需 session / lock
+        pass
 
     async def initialize(self):
-        """验证 agent-browser 可用, 首次调用显式报错比抓取时报错更友好."""
-        if not shutil.which("agent-browser"):
-            raise AgentBrowserNotFound(
-                "agent-browser binary not found in PATH.\n"
+        """验证 url-md 可用, 首次调用显式报错比抓取时报错更友好."""
+        if not shutil.which("url-md"):
+            raise UrlMdNotFound(
+                "url-md binary not found in PATH.\n"
                 "Install:\n"
-                "  brew install agent-browser\n"
-                "  # or: npm install -g agent-browser\n"
-                "See: https://github.com/vercel-labs/agent-browser"
+                "  curl -fsSL https://raw.githubusercontent.com/Bwkyd/url-md/main/install.sh | bash\n"
+                "See: https://github.com/Bwkyd/url-md"
             )
 
-    async def fetch_article(self, url: str) -> dict:
+    async def fetch_article(self, url: str, timeout: int = 45) -> dict:
         """获取微信文章内容.
 
         Args:
             url: 文章URL
+            timeout: url-md 子进程超时(秒)
 
         Returns:
             dict: {success, title, author, publish_time, content, cover_url, error}
+
+            content 字段是 Markdown 格式(url-md 原生输出), 相比 v0.2.0 的纯文本
+            保留了图片引用 / 代码块 / 列表结构 / 标题层级 等富文本信息.
         """
-        async with self._lock:
+        try:
+            await self.initialize()
+
+            # 单次子进程调用 url-md: 抓取 + 反爬 + Markdown 转换一步到位
+            # --quiet: 抑制 stderr 进度提示,stdout 只出 Markdown
+            proc = await asyncio.create_subprocess_exec(
+                "url-md",
+                "md",
+                url,
+                "--quiet",
+                "--timeout",
+                str(timeout),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
             try:
-                await self.initialize()
-
-                # 1. open URL (agent-browser 会自动启动/复用 session daemon)
-                open_result = await self._run(
-                    ["--session", self._session_name, "open", url, "--json"],
-                    timeout=30,
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout + 5
                 )
-                if not open_result.get("success", False):
-                    return {
-                        "success": False,
-                        "error": f"open failed: {open_result.get('error', 'unknown')}",
-                    }
-                self._session_active = True
-
-                # 2. 等待微信正文容器渲染.等不到即反爬拦截页(无 #js_content),早停.
-                wait_result = await self._run(
-                    ["--session", self._session_name, "wait", "#js_content", "--json"],
-                    timeout=15,
-                )
-                if not wait_result.get("success", False):
-                    return {
-                        "success": False,
-                        "error": (
-                            "wait for #js_content failed — likely anti-bot "
-                            "interception page. detail: "
-                            f"{wait_result.get('error', 'timeout')}"
-                        ),
-                    }
-
-                # 3. 取整页 HTML (<html> 元素的 innerHTML)
-                html_result = await self._run(
-                    ["--session", self._session_name, "get", "html", "html", "--json"],
-                    timeout=10,
-                )
-                if not html_result.get("success", False):
-                    return {
-                        "success": False,
-                        "error": f"get html failed: {html_result.get('error')}",
-                    }
-                html = (
-                    html_result.get("data", {}).get("html")
-                    or html_result.get("html")
-                    or ""
-                )
-                if not html:
-                    return {"success": False, "error": "empty HTML response"}
-
-                # 4. 解析 (复用原 parser.py, 保留 cover_url 等字段)
-                parsed = self.parser.parse(html, url)
-                return {"success": True, **parsed, "error": None}
-
-            except AgentBrowserNotFound as e:
-                return {"success": False, "error": str(e)}
             except asyncio.TimeoutError:
-                return {"success": False, "error": "agent-browser subprocess timeout"}
-            except Exception as e:
+                proc.kill()
+                await proc.wait()
                 return {
                     "success": False,
-                    "error": f"Failed to fetch article: {type(e).__name__}: {e}",
+                    "error": f"url-md subprocess timeout after {timeout}s",
                 }
 
-    async def cleanup(self):
-        """关闭 session, 释放 agent-browser 对应的 daemon 进程."""
-        if self._session_active:
-            try:
-                await self._run(
-                    ["--session", self._session_name, "close"],
-                    timeout=5,
-                )
-            except Exception:
-                pass  # cleanup 失败不阻塞退出
-            self._session_active = False
+            if proc.returncode != 0:
+                return {
+                    "success": False,
+                    "error": self._explain_exit_code(proc.returncode, stderr),
+                }
 
-    async def _run(self, args: list, timeout: int) -> dict:
-        """执行一次 agent-browser 子进程, 返回解析后的 JSON dict."""
-        proc = await asyncio.create_subprocess_exec(
-            "agent-browser",
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise
+            markdown = stdout.decode(errors="replace")
+            return self._parse_markdown(markdown)
 
-        if proc.returncode != 0:
+        except UrlMdNotFound as e:
+            return {"success": False, "error": str(e)}
+        except Exception as e:
             return {
                 "success": False,
-                "error": stderr.decode(errors="replace").strip()
-                or f"exit code {proc.returncode}",
+                "error": f"Failed to fetch article: {type(e).__name__}: {e}",
             }
 
-        raw = stdout.decode(errors="replace").strip()
-        if not raw:
-            return {"success": True, "data": {}}
+    async def cleanup(self):
+        """url-md 无持久化 session, cleanup 是 no-op. 保留接口供 MCP server 调用."""
+        return
+
+    @staticmethod
+    def _parse_markdown(md: str) -> dict:
+        """从 url-md 输出解析 frontmatter + body.
+
+        url-md 输出格式:
+            ---
+            title: ...
+            author: ...
+            publish_time: ...
+            cover_url: ...
+            ...
+            ---
+
+            <markdown body>
+        """
+        if not md.startswith("---\n"):
+            # 无 frontmatter(不应发生),整段当 content
+            return {
+                "success": True,
+                "title": "未找到标题",
+                "author": "未知作者",
+                "publish_time": "未知时间",
+                "content": md.strip(),
+                "cover_url": "",
+                "error": None,
+            }
+
+        # 分离 frontmatter 与 body
+        parts = md.split("---\n", 2)
+        if len(parts) < 3:
+            return {
+                "success": False,
+                "error": "malformed markdown: frontmatter delimiter missing",
+            }
+
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            # 某些子命令可能返回纯文本, 封装成统一 shape
-            return {"success": True, "data": {"raw": raw}}
+            fm = yaml.safe_load(parts[1]) or {}
+        except yaml.YAMLError as e:
+            return {
+                "success": False,
+                "error": f"frontmatter YAML parse failed: {e}",
+            }
+
+        body = parts[2].lstrip("\n")
+
+        return {
+            "success": True,
+            "title": str(fm.get("title") or "未找到标题"),
+            "author": str(fm.get("author") or "未知作者"),
+            "publish_time": str(fm.get("publish_time") or "未知时间"),
+            "content": body,
+            "cover_url": str(fm.get("cover_url") or ""),
+            "error": None,
+        }
+
+    @staticmethod
+    def _explain_exit_code(code: int, stderr: bytes) -> str:
+        """把 url-md 退出码翻译成人话."""
+        stderr_text = stderr.decode(errors="replace").strip()
+        meanings = {
+            10: "network error",
+            11: "blocked by anti-bot",
+            12: "paywalled",
+            13: "auth required",
+            20: "parse/extract failed",
+            30: "I/O error",
+            99: "internal error",
+        }
+        hint = meanings.get(code, f"exit code {code}")
+        return f"url-md failed ({hint}): {stderr_text}" if stderr_text else f"url-md failed ({hint})"
